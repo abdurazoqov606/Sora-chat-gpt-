@@ -3,15 +3,19 @@ import logging
 import sqlite3
 import os
 import sys
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web # Render uchun server
+# YANGI MUHIM IMPORT:
+from aiogram.client.default import DefaultBotProperties 
 
-# --- KUTUBXONALAR (Xatolik bo'lsa, bot to'xtamasligi uchun try-except) ---
+from aiohttp import web # Render server uchun
+
+# --- KUTUBXONALARNI EHTIYOTKORLIK BILAN ULASH ---
 try:
     import g4f
 except ImportError:
@@ -33,12 +37,17 @@ FOUNDER_NAME = "abdurazoqov_edits"
 # Loglar
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# Bot
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+# --- BOTNI YARATISH (XATOLIK TUZATILGAN JOY) ---
+# Eski kod: bot = Bot(token=BOT_TOKEN, parse_mode="HTML") -> XATO BERADI
+# Yangi kod:
+bot = Bot(
+    token=BOT_TOKEN, 
+    default=DefaultBotProperties(parse_mode="HTML")
+)
+
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- BAZA (Xotirada ishlaydi, Renderda fayl o'chib ketishi mumkin) ---
-# Oddiy ro'yxatdan foydalanamiz (Crash bo'lmasligi uchun)
+# --- BAZA (Oddiy xotira) ---
 users_db = set()
 
 def add_user(user_id):
@@ -62,16 +71,16 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# --- RENDER UCHUN WEB SERVER (Keep Alive) ---
+# --- RENDER UCHUN WEB SERVER (MUHIM: PORT OCHISH UCHUN) ---
 async def health_check(request):
-    return web.Response(text="Bot ishlab turibdi!")
+    return web.Response(text="Bot ishlab turibdi! Status: OK")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render avtomatik PORT beradi, bo'lmasa 8080
+    # Render PORTni avtomatik beradi
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
@@ -112,10 +121,7 @@ async def mode_handler(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id == ADMIN_ID:
-        await message.answer(f"👑 Admin Panel\nFoydalanuvchilar (taxminiy): {len(users_db)}\n\nReklama uchun matn yoki rasm yuboring.")
-        # Oddiy qilib, keyingi xabarni reklama deb hisoblaymiz
-        global admin_mode
-        admin_mode = True
+        await message.answer(f"👑 Admin Panel\nFoydalanuvchilar: {len(users_db)}")
 
 # --- VIDEO YASASH (Graduo/HuggingFace) ---
 @dp.message(BotStates.gen_video)
@@ -135,7 +141,7 @@ async def make_video(message: types.Message):
         await message.answer_video(video_file, caption=caption, parse_mode="HTML")
         
     except Exception as e:
-        await msg.edit_text(f"❌ Kechirasiz, bepul video serverlar band yoki javob bermayapti.\n\nXato: {e}")
+        await msg.edit_text(f"❌ Xatolik yuz berdi (Server band yoki format xato).\n\nTexnik xato: {e}")
 
 # --- RASM YASASH ---
 @dp.message(BotStates.gen_image)
@@ -158,7 +164,7 @@ async def chat_ai(message: types.Message):
             await wait.delete()
             await message.answer(f"{response}\n\n👤 Asoschi: <a href='{FOUNDER_LINK}'>{FOUNDER_NAME}</a>", disable_web_page_preview=True)
         else:
-            await wait.edit_text("AI moduli o'rnatilmagan.")
+            await wait.edit_text("AI moduli yuklanmadi.")
     except Exception as e:
         await wait.edit_text(f"❌ Xatolik: {e}")
 
@@ -186,7 +192,7 @@ async def downloader(message: types.Message):
 
 # --- MAIN ---
 async def main():
-    # Avval Web Serverni ishga tushiramiz (Render o'chirmasligi uchun)
+    # Renderda port ochish uchun serverni ishga tushiramiz
     await start_web_server()
     
     print("Bot va Server ishga tushdi!")
