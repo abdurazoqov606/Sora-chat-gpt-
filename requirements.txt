@@ -1,4 +1,5 @@
 aiogram>=3.0.0
-g4f
+g4f>=0.2.0
 yt-dlp
 gradio_client
+aiohttp
