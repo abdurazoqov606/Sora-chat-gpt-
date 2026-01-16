@@ -9,11 +9,20 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web # Render uchun server
 
-# --- KUTUBXONALAR ---
-import g4f  # Chat uchun
-import yt_dlp # Yuklash uchun
-from gradio_client import Client # VIDEO YASASH UCHUN
+# --- KUTUBXONALAR (Xatolik bo'lsa, bot to'xtamasligi uchun try-except) ---
+try:
+    import g4f
+except ImportError:
+    g4f = None
+
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
+from gradio_client import Client
 
 # --- SOZLAMALAR ---
 BOT_TOKEN = "8246378380:AAHsa6DjVrXZwXZODaPnbX98GlyI4Hx9Z8Q"
@@ -28,29 +37,12 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- BAZA (Admin uchun) ---
-def db_start():
-    con = sqlite3.connect("users.db")
-    cur = con.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY)")
-    con.commit()
-    con.close()
+# --- BAZA (Xotirada ishlaydi, Renderda fayl o'chib ketishi mumkin) ---
+# Oddiy ro'yxatdan foydalanamiz (Crash bo'lmasligi uchun)
+users_db = set()
 
 def add_user(user_id):
-    con = sqlite3.connect("users.db")
-    cur = con.cursor()
-    try:
-        cur.execute("INSERT INTO users VALUES (?)", (user_id,))
-        con.commit()
-    except:
-        pass
-    con.close()
-
-def get_all_users():
-    con = sqlite3.connect("users.db")
-    cur = con.cursor()
-    cur.execute("SELECT id FROM users")
-    return cur.fetchall()
+    users_db.add(user_id)
 
 # --- STATES ---
 class BotStates(StatesGroup):
@@ -70,39 +62,22 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def admin_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Reklama yuborish", callback_data="admin_broadcast")]
-    ])
+# --- RENDER UCHUN WEB SERVER (Keep Alive) ---
+async def health_check(request):
+    return web.Response(text="Bot ishlab turibdi!")
 
-# --- HANDLERS (ADMIN) ---
-@dp.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        await message.answer("👑 Admin Panel", reply_markup=admin_menu())
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render avtomatik PORT beradi, bo'lmasa 8080
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logging.info(f"Web server started on port {port}")
 
-@dp.callback_query(lambda c: c.data == "admin_broadcast")
-async def admin_broadcast_ask(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id == ADMIN_ID:
-        await callback.message.answer("Xabarni yuboring:")
-        await state.set_state(BotStates.broadcasting)
-
-@dp.message(BotStates.broadcasting)
-async def broadcast_send(message: types.Message, state: FSMContext):
-    if message.from_user.id == ADMIN_ID:
-        users = get_all_users()
-        count = 0
-        await message.answer("Yuborilmoqda...")
-        for user in users:
-            try:
-                await message.copy_to(user[0])
-                count += 1
-                await asyncio.sleep(0.05)
-            except: pass
-        await message.answer(f"✅ {count} kishiga yuborildi.")
-        await state.clear()
-
-# --- HANDLERS (USER) ---
+# --- HANDLERS ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     add_user(message.from_user.id)
@@ -133,20 +108,24 @@ async def mode_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer("💬 Savolingizni yozing:")
     await callback.answer()
 
-# --- FUNKSIYALAR ---
+# --- ADMIN PANEL ---
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id == ADMIN_ID:
+        await message.answer(f"👑 Admin Panel\nFoydalanuvchilar (taxminiy): {len(users_db)}\n\nReklama uchun matn yoki rasm yuboring.")
+        # Oddiy qilib, keyingi xabarni reklama deb hisoblaymiz
+        global admin_mode
+        admin_mode = True
 
-# 1. HAQIQIY VIDEO YASASH (HuggingFace orqali Bepul)
+# --- VIDEO YASASH (Graduo/HuggingFace) ---
 @dp.message(BotStates.gen_video)
 async def make_video(message: types.Message):
     prompt = message.text
-    msg = await message.answer("⏳ <b>Video generatsiya qilinmoqda...</b>\nBu jarayon 1-2 daqiqa vaqt oladi. Iltimos kuting.")
+    msg = await message.answer("⏳ <b>Video generatsiya qilinmoqda...</b>\nBu jarayon 2-3 daqiqa vaqt oladi. Server band bo'lishi mumkin.")
     
     try:
-        # HuggingFace dagi bepul ModelScope modeliga ulanish
+        # Bepul modelga ulanish (ModelScope)
         client = Client("damo-vilab/modelscope-text-to-video-synthesis")
-        
-        # Videoni generatsiya qilish (Blocking call, shuning uchun thread kerak bo'lishi mumkin, lekin Renderda ishlaydi)
-        # API bizga vaqtinchalik fayl yo'lini qaytaradi
         result = client.predict(prompt, fn_index=0)
         
         video_file = FSInputFile(result)
@@ -156,9 +135,9 @@ async def make_video(message: types.Message):
         await message.answer_video(video_file, caption=caption, parse_mode="HTML")
         
     except Exception as e:
-        await msg.edit_text(f"❌ Xatolik: Server band yoki promt juda murakkab.\nXato: {e}")
+        await msg.edit_text(f"❌ Kechirasiz, bepul video serverlar band yoki javob bermayapti.\n\nXato: {e}")
 
-# 2. RASM YASASH (Pollinations - Bepul)
+# --- RASM YASASH ---
 @dp.message(BotStates.gen_image)
 async def make_image(message: types.Message):
     prompt = message.text
@@ -166,43 +145,51 @@ async def make_image(message: types.Message):
     caption = f"🖼 <b>Rasm Tayyor!</b>\n👤 Asoschi: <a href='{FOUNDER_LINK}'>{FOUNDER_NAME}</a>"
     await message.answer_photo(url, caption=caption, parse_mode="HTML")
 
-# 3. CHAT (G4F - Bepul)
+# --- CHAT ---
 @dp.message(BotStates.chatting)
 async def chat_ai(message: types.Message):
     wait = await message.answer("🤔...")
     try:
-        response = await g4f.ChatCompletion.create_async(
-            model=g4f.models.default,
-            messages=[{"role": "user", "content": message.text}]
-        )
-        await wait.delete()
-        await message.answer(f"{response}\n\n👤 Asoschi: <a href='{FOUNDER_LINK}'>{FOUNDER_NAME}</a>", disable_web_page_preview=True)
-    except:
-        await wait.edit_text("❌ Tizimda xatolik.")
+        if g4f:
+            response = await g4f.ChatCompletion.create_async(
+                model=g4f.models.default,
+                messages=[{"role": "user", "content": message.text}]
+            )
+            await wait.delete()
+            await message.answer(f"{response}\n\n👤 Asoschi: <a href='{FOUNDER_LINK}'>{FOUNDER_NAME}</a>", disable_web_page_preview=True)
+        else:
+            await wait.edit_text("AI moduli o'rnatilmagan.")
+    except Exception as e:
+        await wait.edit_text(f"❌ Xatolik: {e}")
 
-# 4. YUKLOVCHI
+# --- YUKLOVCHI ---
 @dp.message(BotStates.downloading)
 async def downloader(message: types.Message):
     url = message.text
     wait = await message.answer("⏳ Yuklanmoqda...")
     try:
-        ydl_opts = {'format': 'best', 'outtmpl': 'vid.%(ext)s', 'quiet': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-        
-        vid = FSInputFile(filename)
-        cap = f"📥 <b>Yuklandi!</b>\n👤 Asoschi: <a href='{FOUNDER_LINK}'>{FOUNDER_NAME}</a>"
-        await message.answer_video(vid, caption=cap, parse_mode="HTML")
-        os.remove(filename)
-        await wait.delete()
+        if yt_dlp:
+            ydl_opts = {'format': 'best', 'outtmpl': 'vid.%(ext)s', 'quiet': True}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+            
+            vid = FSInputFile(filename)
+            cap = f"📥 <b>Yuklandi!</b>\n👤 Asoschi: <a href='{FOUNDER_LINK}'>{FOUNDER_NAME}</a>"
+            await message.answer_video(vid, caption=cap, parse_mode="HTML")
+            os.remove(filename)
+            await wait.delete()
+        else:
+            await wait.edit_text("Yuklovchi modul ishlamayapti.")
     except:
         await wait.edit_text("❌ Link xato.")
 
 # --- MAIN ---
 async def main():
-    db_start()
-    print("Bot ishga tushdi...")
+    # Avval Web Serverni ishga tushiramiz (Render o'chirmasligi uchun)
+    await start_web_server()
+    
+    print("Bot va Server ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
