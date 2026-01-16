@@ -1,0 +1,4 @@
+aiogram>=3.0.0
+g4f
+yt-dlp
+gradio_client
